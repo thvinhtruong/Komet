@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fake `aws` CLI for tests: emulates `aws ec2 describe-instances`,
+# `start-instances` and `stop-instances` for one instance whose state lives
+# in $FAKE_AWS_STATE. The instance "boots" FAKE_AWS_BOOT_S seconds after start.
+set -euo pipefail
+state=${FAKE_AWS_STATE:?}
+boot=${FAKE_AWS_BOOT_S:-2}
+[ -f "$state" ] || echo "stopped 0" >"$state"
+read -r st since <"$state"
+now=$(date +%s)
+[ "$st" = pending ] && [ $((now - since)) -ge "$boot" ] && st=running && echo "running $now" >"$state"
+[ "${1:-}" = ec2 ] || { echo "fake aws: only ec2 is supported" >&2; exit 2; }
+id=""; args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[$i]}" = --instance-ids ] && id=${args[$((i + 1))]}; done
+[ "$id" = "${FAKE_AWS_ID:-i-0123456789abcdef0}" ] || { echo "An error occurred (InvalidInstanceID.NotFound): The instance ID '$id' does not exist" >&2; exit 254; }
+echo "$(date -u +%FT%TZ) $2" >>"$state.log"
+case "$2" in
+describe-instances)
+	ip=""; [ "$st" = running ] && ip=${FAKE_AWS_IP:-127.0.0.1}
+	printf '{"Reservations":[{"Instances":[{"InstanceId":"%s","InstanceType":"g5.xlarge","State":{"Name":"%s"},"PublicIpAddress":"%s","PublicDnsName":""}]}]}\n' "$id" "$st" "$ip"
+	;;
+start-instances) [ "$st" = stopped ] && echo "pending $now" >"$state"; echo '{"StartingInstances":[]}' ;;
+stop-instances) echo "stopped $now" >"$state"; echo '{"StoppingInstances":[]}' ;;
+*) echo "fake aws: unsupported $2" >&2; exit 2 ;;
+esac
