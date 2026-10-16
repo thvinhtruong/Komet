@@ -1,7 +1,9 @@
-.PHONY: build test demo remote-demo release clean
+.PHONY: build test demo remote-demo build-linux build-macos build-windows release clean
+
+GOFLAGS := -trimpath -ldflags "-s -w"
 
 build:
-	go build -trimpath -ldflags "-s -w" -o bin/komet ./cmd/komet
+	go build $(GOFLAGS) -o bin/komet ./cmd/komet
 
 test:
 	go vet ./...
@@ -17,12 +19,21 @@ remote-demo: build
 	./scripts/test-sshd.sh
 	./scripts/remote-demo.sh
 
-release:
-	for t in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64; do \
-		os=$${t%/*}; arch=$${t#*/}; ext=$$([ $$os = windows ] && echo .exe); \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
-			-o dist/komet-$$os-$$arch$$ext ./cmd/komet; \
-	done
+build-linux:
+	mkdir -p build/linux
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -o build/linux/komet-amd64 ./cmd/komet
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build $(GOFLAGS) -o build/linux/komet-arm64 ./cmd/komet
+
+build-macos:
+	mkdir -p build/macos
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -o build/macos/komet-amd64 ./cmd/komet
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build $(GOFLAGS) -o build/macos/komet-arm64 ./cmd/komet
+
+build-windows:
+	mkdir -p build/windows
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -o build/windows/komet-amd64.exe ./cmd/komet
+
+release: build-linux build-macos build-windows
 
 clean:
-	rm -rf bin dist
+	rm -rf bin build
