@@ -21,7 +21,7 @@ DIR=${KOMET_COLAB_DIR:-/content/komet-colab}
 MODEL_URL=${MODEL_URL:-https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf}
 MODEL_NAME=${MODEL_NAME:-qwen2.5-coder-7b}
 MODEL=${MODEL:-$DIR/models/$(basename "$MODEL_URL")}
-PORT=${PORT:-8080}
+PORT=${PORT:-8081}
 CTX=${CTX:-8192}
 # Prebuilt release to download; set LLAMA_TAG to another bNNNN to change it,
 # or BUILD_FROM_SOURCE=1 to skip the download and compile (slow on Colab).
