@@ -4,7 +4,7 @@
 # In a Colab notebook (Runtime -> Change runtime type -> T4 GPU):
 #
 #   !git clone https://github.com/<you>/komet && cd komet
-#   !bash scripts/colab.sh install          # build llama.cpp with CUDA (~10 min first time)
+#   !bash scripts/colab.sh install          # download prebuilt llama.cpp with CUDA (~1 min)
 #   !bash scripts/colab.sh model            # download the default GGUF model
 #   !bash scripts/colab.sh serve            # start llama-server + HTTPS tunnel, print Komet config
 #   !bash scripts/colab.sh stop
@@ -23,29 +23,74 @@ MODEL_NAME=${MODEL_NAME:-qwen2.5-coder-7b}
 MODEL=${MODEL:-$DIR/models/$(basename "$MODEL_URL")}
 PORT=${PORT:-8080}
 CTX=${CTX:-8192}
-BIN=$DIR/llama.cpp/build/bin/llama-server
+# Prebuilt release to download; set LLAMA_TAG to another bNNNN to change it,
+# or BUILD_FROM_SOURCE=1 to skip the download and compile (slow on Colab).
+LLAMA_TAG=${LLAMA_TAG:-b11696}
+REL=https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG
+BIN_DIR=$DIR/bin
+BIN=$BIN_DIR/llama-server
 RUN=$DIR/run
+export LD_LIBRARY_PATH="$BIN_DIR:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
 log() { printf '\033[1m[colab]\033[0m %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
+has_gpu() { nvidia-smi >/dev/null 2>&1; }
+missing_libs() { ldd "$BIN" 2>/dev/null | grep 'not found' || true; }
 
 install() {
-	if [ -x "$BIN" ]; then log "llama-server already built: $BIN"; return; fi
+	if [ -x "$BIN" ] && "$BIN" --version >/dev/null 2>&1; then log "llama-server ready: $BIN"; return; fi
 	mkdir -p "$DIR"
+	if [ "${BUILD_FROM_SOURCE:-0}" != 1 ] && install_prebuilt; then return; fi
+	build_from_source
+}
+
+# Official release binaries: ~165 MB download instead of a long nvcc build.
+install_prebuilt() {
+	flavor=ubuntu-x64
+	has_gpu && flavor=ubuntu-cuda-12.8-x64
+	tmp=$(mktemp -d)
+	log "downloading prebuilt llama.cpp $LLAMA_TAG ($flavor)"
+	curl -fL --retry 3 -o "$tmp/llama.tar.gz" "$REL/llama-$LLAMA_TAG-bin-$flavor.tar.gz" || { rm -rf "$tmp"; return 1; }
+	tar -xzf "$tmp/llama.tar.gz" -C "$tmp"
+	rm -rf "$BIN_DIR"
+	mv "$tmp/llama-$LLAMA_TAG" "$BIN_DIR"
+	rm -rf "$tmp"
+
+	# Colab ships the CUDA 12 runtime in /usr/local/cuda; fetch the bundled
+	# cuBLAS/cudart (~570 MB) only if the system copy is missing.
+	if has_gpu && [ -n "$(missing_libs)" ]; then
+		log "system CUDA libraries missing; downloading the CUDA runtime bundle"
+		tmp=$(mktemp -d)
+		curl -fL --retry 3 -o "$tmp/cudart.tar.gz" "$REL/cudart-llama-$LLAMA_TAG-bin-$flavor.tar.gz" &&
+			tar -xzf "$tmp/cudart.tar.gz" -C "$tmp" && cp "$tmp"/cudart-*/*.so* "$BIN_DIR"/
+		rm -rf "$tmp"
+	fi
+	if [ -n "$(missing_libs)" ] || ! "$BIN" --version >/dev/null 2>&1; then
+		missing_libs >&2
+		log "prebuilt binary does not run here; falling back to a source build"
+		rm -rf "$BIN_DIR"
+		return 1
+	fi
+	log "installed $BIN"
+}
+
+build_from_source() {
 	command -v cmake >/dev/null || { apt-get update -qq && apt-get install -y -qq cmake build-essential git; }
 	[ -d "$DIR/llama.cpp" ] || git clone --depth 1 https://github.com/ggml-org/llama.cpp "$DIR/llama.cpp"
 	export PATH="$PATH:/usr/local/cuda/bin"
-	flags="-DLLAMA_CURL=OFF"
-	if command -v nvcc >/dev/null && nvidia-smi >/dev/null 2>&1; then
-		# "native" builds only for the attached GPU, which is much faster than all archs.
+	flags="-DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+	if command -v nvcc >/dev/null && has_gpu; then
+		# "native" compiles kernels only for the attached GPU instead of every arch.
 		flags="$flags -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native"
-		log "building with CUDA for $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
+		log "building with CUDA for $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1) (10+ min)"
 	else
 		log "no GPU runtime detected; building CPU-only (switch runtime to GPU for real speed)"
 	fi
 	cd "$DIR/llama.cpp"
 	cmake -B build $flags -DCMAKE_BUILD_TYPE=Release
 	cmake --build build -j"$(nproc)" --target llama-server
+	rm -rf "$BIN_DIR"
+	ln -s "$DIR/llama.cpp/build/bin" "$BIN_DIR"
 	log "built $BIN"
 }
 
